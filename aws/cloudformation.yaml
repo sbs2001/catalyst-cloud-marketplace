@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Decentraland Catalyst Node Template"
+Parameters:
+  VolumeSize:
+    Description: Size of the EBS volume in GiB. This is used to store the content server data.
+    Type: Number
+    Default: 2048
+    MinValue: 2048
+    ConstraintDescription: must be atleast 2 TB.
+  CatalystEmail:
+    Description: Catalyst Email
+    Type: String
+  LivekitHost:
+    Description: Livekit Host
+    Type: String
+  LivekitAPIKey:
+    Description: Livekit API Key
+    Type: String
+  LivekitAPISecret:
+    Description: Livekit API Secret
+    Type: String
+  LivekitRoomPrefix:
+    Description: Livekit Room Prefix
+    Type: String
+  RealmName:
+    Description: Realm Name
+    Type: String
+  VpcId:
+    Description: ID of the VPC in which to launch the EC2 instance
+    Type: AWS::EC2::VPC::Id
+    ConstraintDescription: must be the ID of an existing VPC.
+  SubnetId:
+    Description: ID of the Subnet in which to launch the EC2 instance
+    Type: AWS::EC2::Subnet::Id
+    ConstraintDescription: must be the ID of an existing Subnet.
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t2.medium
+    AllowedValues:
+      - t2.micro
+      - t2.medium
+      - m5.large
+      - m5.xlarge
+    ConstraintDescription: must be a valid EC2 instance type.
+  SSHLocation:
+    Description: The IP address range that can be used to SSH to the EC2 instances
+    Type: String
+    MinLength: "9"
+    MaxLength: "18"
+    Default: 0.0.0.0/0
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+Mappings:
+  AWSRegion2AMI:
+    us-east-1:
+      AMI: ami-0f4420dd06ba77387
+    us-west-2:
+      AMI: ami-06dc307b21d141241
+    eu-north-1:
+      AMI: ami-0bca5144a20ecd13f
+    ap-south-1:
+      AMI: ami-090877ce032ab7f87
+Resources:
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG for Decentraland Catalyst Node
+      GroupName: Decentraland
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHLocation
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VpcId
+            
+  EBSVolume:
+    Type: 'AWS::EC2::Volume'
+    Properties:
+      AvailabilityZone: !GetAtt EC2Instance.AvailabilityZone
+      Size: !Ref VolumeSize 
+      VolumeType: gp2  
+
+  MountPoint:
+    Type: 'AWS::EC2::VolumeAttachment'
+    Properties:
+      Device: /dev/sdf
+      InstanceId: !Ref EC2Instance
+      VolumeId: !Ref EBSVolume
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      SecurityGroupIds:
+        - Ref: InstanceSecurityGroup
+      SubnetId: !Ref SubnetId
+      KeyName: !Ref KeyName
+      ImageId:
+        Fn::FindInMap:
+          - AWSRegion2AMI
+          - Ref: AWS::Region
+          - AMI
+      Tags:
+        - Key: Name
+          Value: Decentraland
+      UserData:
+        Fn::Base64: 
+          !Sub |
+            #!/bin/bash
+            curl "https://get.docker.com/" | sh
+            git clone --depth=1 https://github.com/decentraland/catalyst-owner.git 
+            cd catalyst-owner
+            cat <<EOF > .env
+            EMAIL=CatalystEmail
+            CONTENT_SERVER_STORAGE=/opt/catalyst-storage
+            CATALYST_URL=https://$(curl -s icanhazip.com)
+            LIVEKIT_HOST=LiveKitHost
+            LIVEKIT_API_KEY=LivekitAPIKey
+            LIVEKIT_API_SECRET=LivekitAPISecret
+            ROOM_PREFIX=LivekitRoomPrefix
+            EOF
+
+            cp .env-advanced.example .env-advanced
+            mkdir -p /opt/catalyst-storage
+            sleep 30
+            mkfs -t xfs /dev/xvdf
+            mount /dev/xvdf /opt/catalyst-storage
+            echo 'docker compose "$@"' >  /bin/docker-compose
+            chmod +x /bin/docker-compose
+            ./init.sh
+
+Outputs:
+  InstanceId:
+    Description: InstanceId of the Private Testnet
+    Value:
+      Ref: EC2Instance
+  PublicDNS:
+    Description: Public DNSName of the Private Testnet
+    Value:
+      Fn::GetAtt:
+        - EC2Instance
+        - PublicDnsName
+  PublicIP:
+    Description: Public IP address of the Private Testnet
+    Value:
+      Fn::GetAtt:
+        - EC2Instance
+        - PublicIp
